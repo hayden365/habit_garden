@@ -1,0 +1,19 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+### IntelliJ IDEA ###
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+### Env / secrets ###
+.env
+*.local
+application-local.yml
+application-local.properties
+
+### OS ###
+.DS_Store
+Thumbs.db

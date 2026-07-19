@@ -1,0 +1,35 @@
+server:
+  # Railway injects a PORT; fall back to 8080 for local runs.
+  port: ${PORT:8080}
+  # Honor X-Forwarded-* headers from Railway's proxy so OAuth redirect URLs
+  # are built as https://your-app.up.railway.app (prevents redirect_uri_mismatch).
+  forward-headers-strategy: framework
+
+spring:
+  # ---- Database ----
+  # Local default: in-memory H2 (no setup needed, resets on restart).
+  # On Railway, override these three with environment variables:
+  #   SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:h2:mem:habitgarden;DB_CLOSE_DELAY=-1}
+    username: ${SPRING_DATASOURCE_USERNAME:sa}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+
+  jpa:
+    hibernate:
+      ddl-auto: update   # auto-creates/updates tables. Fine for a small app.
+    open-in-view: false
+
+  # ---- Google OAuth2 login ----
+  # These two MUST be provided as environment variables (see README):
+  #   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - email
+              - profile

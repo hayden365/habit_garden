@@ -2,6 +2,7 @@ package com.habitgarden.habit;
 
 import com.habitgarden.habit.HabitDtos.CreateHabitRequest;
 import com.habitgarden.habit.HabitDtos.HabitResponse;
+import com.habitgarden.habit.HabitDtos.ImportHabitRequest;
 import com.habitgarden.user.User;
 import com.habitgarden.user.UserRepository;
 import jakarta.validation.Valid;
@@ -14,6 +15,7 @@ import org.springframework.http.HttpStatus;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 
@@ -25,6 +27,9 @@ public class HabitController {
     private static final ZoneId ZONE = ZoneId.of("Asia/Seoul");
     /** How many days of grass we send to the browser (26 weeks ~= half a year). */
     private static final int WINDOW_DAYS = 182;
+    /** Caps on a single guest import, to reject abusive bulk payloads. */
+    private static final int MAX_IMPORT_HABITS = 100;
+    private static final int MAX_IMPORT_DATES_PER_HABIT = 400;
 
     private final HabitRepository habitRepository;
     private final CheckInRepository checkInRepository;
@@ -99,6 +104,59 @@ public class HabitController {
         return toResponse(habit, today, today.minusDays(WINDOW_DAYS - 1));
     }
 
+    /**
+     * Merge a guest's browser-stored habits into the logged-in account.
+     * "Add all": every uploaded habit becomes a new habit (no de-duplication).
+     * Invalid, future, or duplicate dates are silently skipped. Returns the
+     * account's full, refreshed habit list so the browser can render it.
+     */
+    @PostMapping("/habits/import")
+    public List<HabitResponse> importHabits(@AuthenticationPrincipal OAuth2User principal,
+                                            @RequestBody List<ImportHabitRequest> items) {
+        User user = currentUser(principal);
+        if (items == null) {
+            items = List.of();
+        }
+        if (items.size() > MAX_IMPORT_HABITS) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "too many habits: max " + MAX_IMPORT_HABITS);
+        }
+
+        LocalDate today = today();
+        for (ImportHabitRequest req : items) {
+            if (req == null || req.title() == null || req.title().isBlank()) {
+                continue; // skip junk rather than failing the whole import
+            }
+            Habit habit = new Habit();
+            habit.setUser(user);
+            habit.setTitle(req.title().trim());
+            if (req.color() != null && !req.color().isBlank()) {
+                habit.setColor(req.color());
+            }
+            habit = habitRepository.save(habit);
+
+            Set<LocalDate> seen = new HashSet<>();
+            List<String> dates = req.completedDates() == null ? List.of() : req.completedDates();
+            for (String raw : dates) {
+                if (seen.size() >= MAX_IMPORT_DATES_PER_HABIT) {
+                    break; // ignore overflow beyond the per-habit cap
+                }
+                LocalDate date = parseDateOrNull(raw);
+                if (date == null || date.isAfter(today) || !seen.add(date)) {
+                    continue; // skip unparseable, future, or duplicate dates
+                }
+                checkInRepository.save(new CheckIn(habit, date));
+            }
+        }
+
+        LocalDate windowStart = today.minusDays(WINDOW_DAYS - 1);
+        List<HabitResponse> result = new ArrayList<>();
+        for (Habit habit : habitRepository.findByUserOrderByCreatedAtAsc(user)) {
+            result.add(toResponse(habit, today, windowStart));
+        }
+        return result;
+    }
+
     @DeleteMapping("/habits/{id}")
     public ResponseEntity<Void> delete(@AuthenticationPrincipal OAuth2User principal,
                                        @PathVariable Long id) {
@@ -128,6 +186,18 @@ public class HabitController {
     }
 
     // ---- helpers ----
+
+    /** Parse a 'YYYY-MM-DD' string, or null if it is missing/malformed. */
+    private static LocalDate parseDateOrNull(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(raw.trim());
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
 
     private HabitResponse toResponse(Habit habit, LocalDate today, LocalDate windowStart) {
         List<CheckIn> checkIns =

@@ -2,10 +2,14 @@
 
 // ---- config ----
 const WEEKS = 26;                 // how many weeks of grass to show
+const WINDOW_DAYS = 182;          // matches the server's heatmap window
 const MONTHS_KO = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
 const PRESET_COLORS = ["#3FA34D", "#2E86AB", "#E8A33D", "#C0504D", "#7C5CBF", "#E86A9A"];
+const DEFAULT_COLOR = PRESET_COLORS[0];
+const GUEST_KEY = "habitgarden.guest";
 
 let selectedColor = PRESET_COLORS[0];
+let store = null; // GuestStore or ServerStore, chosen at boot
 
 // ---- tiny date helpers ----
 function seoulToday() {
@@ -35,13 +39,119 @@ async function api(path, opts = {}) {
         ...opts,
     });
     if (res.status === 401) {
-        // session gone: bounce back to the login screen
+        // Session gone while logged in: drop back to guest mode.
         location.reload();
         throw new Error("unauthorized");
     }
     if (!res.ok) throw new Error(`${res.status}`);
     if (res.status === 204) return null;
     return res.json();
+}
+
+// ---- data stores ----
+// Both stores expose the same interface and return "normalized" habits:
+//   { id, title, color, completedDates, checkedToday, totalCount, currentStreak }
+
+// Server-backed store for logged-in users. The server already computes streaks.
+const ServerStore = {
+    list()               { return api("/api/habits"); },
+    create(title, color) { return api("/api/habits", { method: "POST", body: JSON.stringify({ title, color }) }); },
+    toggleToday(id)      { return api(`/api/habits/${id}/toggle`, { method: "POST" }); },
+    remove(id)           { return api(`/api/habits/${id}`, { method: "DELETE" }); },
+};
+
+// localStorage-backed store for guests. Grass math is done client-side so it
+// matches the server's Asia/Seoul window and streak logic.
+const GuestStore = {
+    async list() {
+        return readGuest().habits.map(normalizeGuest);
+    },
+    async create(title, color) {
+        const g = readGuest();
+        const habit = {
+            id: "g" + g.nextId++,
+            title: title.trim(),
+            color: color && color.trim() ? color : DEFAULT_COLOR,
+            createdAt: Date.now(),
+            completedDates: [],
+        };
+        g.habits.push(habit);
+        writeGuest(g);
+        return normalizeGuest(habit);
+    },
+    async toggleToday(id) {
+        const g = readGuest();
+        const habit = g.habits.find(h => h.id === id);
+        if (!habit) throw new Error("not found");
+        const today = seoulToday();
+        const i = habit.completedDates.indexOf(today);
+        if (i >= 0) habit.completedDates.splice(i, 1);
+        else habit.completedDates.push(today);
+        writeGuest(g);
+        return normalizeGuest(habit);
+    },
+    async remove(id) {
+        const g = readGuest();
+        g.habits = g.habits.filter(h => h.id !== id);
+        writeGuest(g);
+        return null;
+    },
+};
+
+function emptyGuest() { return { nextId: 1, habits: [] }; }
+
+function readGuest() {
+    try {
+        const raw = localStorage.getItem(GUEST_KEY);
+        if (!raw) return emptyGuest();
+        const g = JSON.parse(raw);
+        if (!g || !Array.isArray(g.habits)) return emptyGuest();
+        if (typeof g.nextId !== "number") g.nextId = g.habits.length + 1;
+        return g;
+    } catch (e) {
+        return emptyGuest();
+    }
+}
+function writeGuest(g) {
+    localStorage.setItem(GUEST_KEY, JSON.stringify(g));
+}
+function clearGuest() {
+    localStorage.removeItem(GUEST_KEY);
+}
+function guestHasHabits() {
+    return readGuest().habits.length > 0;
+}
+
+// Turn a stored guest habit into the same shape the server returns, computing
+// streak/totalCount/checkedToday over the visible window (mirrors the server).
+function normalizeGuest(habit) {
+    const todayStr = seoulToday();
+    const today = parseYMD(todayStr);
+    const windowStart = addDays(today, -(WINDOW_DAYS - 1));
+
+    const done = new Set();
+    for (const d of habit.completedDates) {
+        const dt = parseYMD(d);
+        if (dt >= windowStart && dt <= today) done.add(d);
+    }
+
+    const checkedToday = done.has(todayStr);
+    let streak = 0;
+    let cursor = checkedToday ? today : addDays(today, -1);
+    while (done.has(fmtYMD(cursor))) {
+        streak++;
+        cursor = addDays(cursor, -1);
+    }
+
+    return {
+        id: habit.id,
+        title: habit.title,
+        color: habit.color,
+        completedDates: [...done],
+        checkedToday,
+        totalCount: done.size,
+        currentStreak: streak,
+    };
 }
 
 // ---- boot ----
@@ -52,12 +162,36 @@ async function init() {
     const account = document.getElementById("account");
     const app = document.getElementById("app");
 
-    if (!me.loggedIn) {
-        account.innerHTML = "";
-        renderLogin(app);
-        return;
+    if (me.loggedIn) {
+        // If this browser has guest habits, fold them into the account once.
+        if (guestHasHabits()) {
+            try {
+                const payload = readGuest().habits.map(h => ({
+                    title: h.title,
+                    color: h.color,
+                    completedDates: h.completedDates,
+                }));
+                await api("/api/habits/import", { method: "POST", body: JSON.stringify(payload) });
+                clearGuest();
+            } catch (e) {
+                // Keep the guest data so we can retry on the next load.
+                console.error("게스트 습관 병합 실패:", e);
+                alert("이전 습관을 계정으로 옮기지 못했어요. 새로고침하면 다시 시도합니다.");
+            }
+        }
+        store = ServerStore;
+        renderAccount(account, me);
+    } else {
+        store = GuestStore;
+        renderGuestAccount(account);
     }
 
+    renderApp(app);
+    await loadHabits();
+}
+
+// ---- header (account area) ----
+function renderAccount(account, me) {
     account.innerHTML = `
         ${me.picture ? `<img src="${escapeAttr(me.picture)}" alt=""/>` : ""}
         <span class="who">${escapeHtml(me.name || me.email)}</span>
@@ -73,34 +207,17 @@ async function init() {
         document.body.appendChild(f);
         f.submit();
     });
-
-    renderApp(app);
-    await loadHabits();
 }
 
-// ---- login view ----
-function renderLogin(root) {
-    root.innerHTML = `
-        <section class="hero">
-            <div class="demo-grid" id="demo-grid"></div>
-            <h1>오늘의 작은 습관,<br/>한 칸씩 잔디로.</h1>
-            <p>코딩테스트 5문제 풀기처럼 아주 작은 습관을 정하고<br/>매일 체크하세요. 기록이 쌓여 나만의 잔디밭이 됩니다.</p>
-            <a class="btn-google" href="/oauth2/authorization/google">
-                ${googleSvg()} Google로 시작하기
-            </a>
-        </section>
+function renderGuestAccount(account) {
+    account.innerHTML = `
+        <a class="btn-google btn-google-sm" href="/oauth2/authorization/google">
+            ${googleSvg()} Google로 시작하기
+        </a>
     `;
-    // decorative sample grass
-    const demo = document.getElementById("demo-grid");
-    const set = new Set();
-    const today = parseYMD(seoulToday());
-    for (let i = 0; i < WEEKS * 7; i++) {
-        if (Math.random() < 0.45) set.add(fmtYMD(addDays(today, -i)));
-    }
-    demo.appendChild(buildGrid(set, seoulToday(), "#3FA34D", { interactive: false }));
 }
 
-// ---- app view (logged in) ----
+// ---- app view (always shown) ----
 function renderApp(root) {
     root.innerHTML = `
         <div class="add-card">
@@ -135,7 +252,7 @@ function renderApp(root) {
 }
 
 async function loadHabits() {
-    const habits = await api("/api/habits");
+    const habits = await store.list();
     const container = document.getElementById("habits");
     container.innerHTML = "";
     if (!habits.length) {
@@ -150,22 +267,19 @@ async function addHabit() {
     const title = input.value.trim();
     if (!title) { input.focus(); return; }
     input.value = "";
-    await api("/api/habits", {
-        method: "POST",
-        body: JSON.stringify({ title, color: selectedColor }),
-    });
+    await store.create(title, selectedColor);
     await loadHabits();
 }
 
 async function toggleHabit(id) {
-    const updated = await api(`/api/habits/${id}/toggle`, { method: "POST" });
+    const updated = await store.toggleToday(id);
     const card = document.querySelector(`[data-habit="${id}"]`);
     if (card) card.replaceWith(renderHabit(updated));
 }
 
 async function deleteHabit(id, title) {
     if (!confirm(`"${title}" 습관과 기록을 삭제할까요?`)) return;
-    await api(`/api/habits/${id}`, { method: "DELETE" });
+    await store.remove(id);
     const card = document.querySelector(`[data-habit="${id}"]`);
     if (card) card.remove();
     const container = document.getElementById("habits");

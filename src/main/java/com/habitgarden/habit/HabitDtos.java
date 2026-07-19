@@ -12,6 +12,16 @@ public class HabitDtos {
             String color
     ) {}
 
+    /**
+     * One habit uploaded from a guest's browser when they log in. Carries the
+     * grass history (check-in dates) so it can be merged into their account.
+     */
+    public record ImportHabitRequest(
+            @NotBlank @Size(max = 60) String title,
+            String color,
+            List<String> completedDates
+    ) {}
+
     /** What we send back to the browser for each habit, including grass data. */
     public record HabitResponse(
             Long id,

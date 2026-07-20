@@ -14,10 +14,10 @@ const SESSION_HINT = "habitgarden.hadsession";
 
 let selectedColor = PRESET_COLORS[0];
 let store = null; // GuestStore or ServerStore, chosen at boot
-// True only when init() failed to reach /api/me for a browser that has a
-// server-side account (hadSession() below) -- the one case where reconnecting
-// can produce data the client doesn't already have, so it's the one case the
-// "online" handler reloads for.
+// True only when init()'s /api/me failed -- for any reason, offline or a 500 --
+// on a browser that has a server-side account (hadSession() below). That is the
+// one case where reconnecting can produce data the client doesn't already have,
+// so it's the one case the "online" handler reloads for.
 let bootFailed = false;
 
 // ---- tiny date helpers ----
@@ -42,7 +42,7 @@ function fmtYMD(date) {
 }
 
 // ---- api wrapper ----
-// Shared so a reword here can't silently stop matching in withNetworkGuard.
+// Shared so a reword here can't silently stop matching in withErrorGuard.
 const UNAUTHORIZED = "unauthorized";
 
 async function api(path, opts = {}) {
@@ -212,19 +212,22 @@ async function init() {
         // is unreachable at boot, so the connectivity wording is right even
         // for e.g. a 500.
         showBanner(troubleMessage());
-        renderGuestAccount(account);
         if (hadSession()) {
             // This browser has an account whose habits live on the server.
             // Dropping it into an empty guest garden would read as data loss.
             // Only here is a reload on reconnect worth the cost: it is the one
             // case where coming back online can produce data we don't have.
             bootFailed = true;
+            // This user already has an account, so a login control would be
+            // both useless and alarming -- it reads as "you are signed out".
+            renderStatusAccount(account, "로그인 정보를 확인할 수 없어요.");
             app.innerHTML = "";
             app.appendChild(emptyWithRetry("연결되면 습관을 다시 불러올게요."));
             return;
         }
         // No account was ever seen here, so localStorage holds everything this
         // user has — and reading it needs no network.
+        renderGuestAccount(account);
         store = GuestStore;
         renderApp(app);
         await loadHabitsGuarded();
@@ -281,11 +284,24 @@ function renderAccount(account, me) {
 }
 
 function renderGuestAccount(account) {
+    if (!navigator.onLine) {
+        // /oauth2/ is network-only by design (see sw.js), so offline this link
+        // cannot fall back to the cached shell -- the browser paints its own
+        // error page inside the standalone window, which has no address bar and
+        // no back arrow to escape with. Offer nothing to tap instead.
+        renderStatusAccount(account, "로그인은 연결된 뒤에 할 수 있어요.");
+        return;
+    }
     account.innerHTML = `
         <a class="btn-google btn-google-sm" href="/oauth2/authorization/google">
             ${googleSvg()} Google로 시작하기
         </a>
     `;
+}
+
+// Inert stand-in for the account area: says what is going on, offers no control.
+function renderStatusAccount(account, message) {
+    account.innerHTML = `<span class="who">${escapeHtml(message)}</span>`;
 }
 
 // ---- app view (always shown) ----
@@ -359,6 +375,9 @@ async function loadHabitsGuarded() {
     try {
         await loadHabits();
     } catch (e) {
+        // api() reloads the page on 401; an error card would only flash a
+        // misleading message in the moment before the reload lands.
+        if (e && e.message === UNAUTHORIZED) return;
         console.error("습관 목록 불러오기 실패:", e);
         showBanner(errorMessage(e));
         const target = document.getElementById("habits") || document.getElementById("app");
@@ -373,7 +392,7 @@ async function addHabit() {
     const input = document.getElementById("new-title");
     const title = input.value.trim();
     if (!title) { input.focus(); return; }
-    await withNetworkGuard(async () => {
+    await withErrorGuard(async () => {
         await store.create(title, selectedColor);
         // Only now is the typed title safe to discard; a failed create must
         // leave it in the box so the user can retry without retyping.
@@ -383,7 +402,7 @@ async function addHabit() {
 }
 
 async function toggleHabit(id) {
-    await withNetworkGuard(async () => {
+    await withErrorGuard(async () => {
         const updated = await store.toggleToday(id);
         const card = document.querySelector(`[data-habit="${id}"]`);
         if (card) card.replaceWith(renderHabit(updated));
@@ -392,7 +411,7 @@ async function toggleHabit(id) {
 
 async function deleteHabit(id, title) {
     if (!confirm(`"${title}" 습관과 기록을 삭제할까요?`)) return;
-    await withNetworkGuard(async () => {
+    await withErrorGuard(async () => {
         await store.remove(id);
         const card = document.querySelector(`[data-habit="${id}"]`);
         if (card) card.remove();
@@ -531,7 +550,7 @@ function hideBanner() {
 
 // Wraps a user action so any failure -- network or not -- shows a notice
 // instead of failing silently in the console.
-async function withNetworkGuard(fn) {
+async function withErrorGuard(fn) {
     try {
         await fn();
         // A GuestStore write succeeds with no network at all, so a success is

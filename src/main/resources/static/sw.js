@@ -1,8 +1,10 @@
 "use strict";
 
-// Bump this whenever index.html, style.css, or app.js changes. Installed apps
-// serve the shell cache-first, so without a bump they keep showing the old UI.
-const CACHE_VERSION = "hg-v5";
+// Bump this whenever anything in PRECACHE below changes -- index.html,
+// style.css, app.js, manifest.json, or any icon. The shell is served
+// cache-first to every repeat visitor, installed or not, so without a bump
+// they keep getting the old files.
+const CACHE_VERSION = "hg-v6";
 
 // The app shell: everything needed to paint a window with no network.
 const PRECACHE = [

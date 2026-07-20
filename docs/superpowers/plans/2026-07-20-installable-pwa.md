@@ -622,15 +622,22 @@ git commit -m "feat: show a notice when the network is unavailable"
 
 ### ⚠️ 프론트엔드를 수정했다면 CACHE_VERSION을 올리세요
 
-`index.html` · `style.css` · `app.js` 중 하나라도 고쳤다면
-`src/main/resources/static/sw.js` 맨 위의 상수를 반드시 올려야 합니다:
+서비스워커가 미리 캐시하는 파일 — `index.html` · `style.css` · `app.js` · `manifest.json` ·
+`icons/icon-192.png` · `icons/icon-512.png` · `icons/icon-maskable-512.png` — 중 하나라도
+고쳤다면 `src/main/resources/static/sw.js` 맨 위의 상수를 반드시 올려야 합니다:
 
 ```js
-const CACHE_VERSION = "hg-v5";   // → "hg-v6"
+const CACHE_VERSION = "hg-v6";   // → "hg-v7"
 ```
 
-서비스워커가 앱 셸을 캐시 우선으로 서빙하기 때문에, 이 값을 올리지 않으면 **배포해도 이미 설치한
-사용자에게는 예전 화면이 계속 보입니다.** 이 프로젝트에서 가장 흔한 실수입니다.
+서비스워커가 앱 셸을 캐시 우선으로 서빙하기 때문에, 이 값을 올리지 않으면 **배포해도 다시 찾아오는
+모든 방문자에게 예전 화면이 계속 보입니다.** 앱으로 설치한 사용자만의 문제가 아닙니다 —
+`index.html`이 모든 방문자에게 서비스워커를 등록하므로, 재방문자(=대부분의 트래픽) 전체가
+영향을 받습니다. 이 프로젝트에서 가장 흔한 실수입니다.
+
+> **올린 뒤 첫 새로고침에는 화면이 그대로입니다.** 새 워커의 설치·활성화는 그것을 촉발한
+> 페이지 로드와 **동시에** 진행되므로, 그 로드는 아직 옛 워커가 옛 셸로 응답합니다.
+> 새 화면은 **두 번째 로드**부터 보입니다. 한 번 새로고침해서 안 바뀌었다고 실패로 판단하지 마세요.
 ````
 
 - [ ] **Step 2: 전체 테스트를 돌린다**
@@ -653,7 +660,7 @@ Expected: `Started HabitGardenApplication` 로그. http://localhost:8080 접속 
 크롬에서 http://localhost:8080 접속 → DevTools → Application 탭:
 - **Manifest**: 이름 "습관 정원", 아이콘 3개가 미리보기로 보이고 빨간 에러가 없어야 한다
 - **Service Workers**: `sw.js`가 "activated and is running" 상태여야 한다
-- **Cache Storage**: `hg-v5` 캐시 안에 7개 항목(`/`, `/style.css`, `/app.js`, `/manifest.json`, 아이콘 3개)이 있어야 한다
+- **Cache Storage**: `hg-v6` 캐시 안에 7개 항목(`/`, `/style.css`, `/app.js`, `/manifest.json`, 아이콘 3개)이 있어야 한다
 
 localhost는 https 예외로 취급되므로 로컬에서도 설치 아이콘이 나타납니다.
 
@@ -696,9 +703,13 @@ localhost는 https 예외로 취급되므로 로컬에서도 설치 아이콘이
 1. `style.css`의 `--paper` 값을 `#FFE8E8`로 잠깐 바꾸고 저장한다
 2. `sw.js`의 `CACHE_VERSION`은 **그대로 둔 채** 앱을 재시작하고 강제 새로고침(Cmd+Shift+R)한다
    - 기대: 배경색이 **바뀌지 않는다** (캐시 우선 동작이 의도대로라는 증거)
-3. `CACHE_VERSION`을 `hg-v6`으로 올리고 재시작 후 새로고침한다
-   - 기대: 배경이 분홍색으로 바뀌고, Cache Storage에서 `hg-v5`가 사라지고 `hg-v6`만 남는다
-4. `--paper`를 `#F3F5EF`로, `CACHE_VERSION`을 `hg-v5`로 되돌린다
+3. `CACHE_VERSION`을 `hg-v7`로 올리고 재시작 후 새로고침한다
+   - 기대(첫 새로고침): Cache Storage에서 `hg-v6`이 사라지고 `hg-v7`만 남는다. 하지만 **배경색은
+     아직 그대로다** — 새 워커의 설치·활성화가 이 로드와 동시에 진행되므로 이 로드는 옛 워커가
+     옛 셸로 응답한다. 여기서 실패로 판단하면 안 된다
+4. **한 번 더 새로고침한다**
+   - 기대: 이번에 배경이 분홍색으로 바뀐다
+5. `--paper`를 `#F3F5EF`로, `CACHE_VERSION`을 `hg-v6`으로 되돌린다
 
 - [ ] **Step 7: 데스크톱 설치를 확인한다 (수동)**
 

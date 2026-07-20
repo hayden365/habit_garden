@@ -54,7 +54,12 @@ self.addEventListener("fetch", (event) => {
                 .then((res) => {
                     if (res.ok && res.type === "basic") {
                         const copy = res.clone();
-                        caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
+                        // Don't make the response wait on this, but keep the worker
+                        // alive until it finishes or the browser may kill it first
+                        // and silently drop the write.
+                        event.waitUntil(
+                            caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy))
+                        );
                     }
                     return res;
                 })

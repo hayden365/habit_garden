@@ -27,6 +27,9 @@ public class SecurityConfig {
                 // Public: the app shell, static assets, login endpoints, and /api/me
                 .requestMatchers(
                         "/", "/index.html", "/style.css", "/app.js", "/favicon.ico",
+                        // PWA assets — the browser fetches these while logged out,
+                        // so a 401 here silently kills the install prompt.
+                        "/manifest.json", "/icons/**",
                         "/error", "/login/**", "/oauth2/**", "/api/me"
                 ).permitAll()
                 // Everything else (the real API) needs a logged-in session

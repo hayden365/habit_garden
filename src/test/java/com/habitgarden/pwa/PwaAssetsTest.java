@@ -7,8 +7,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.hamcrest.Matchers.containsString;
 
 /**
  * The install prompt only appears if the browser can fetch the manifest and its
@@ -44,5 +46,18 @@ class PwaAssetsTest {
     @Test
     void serviceWorkerIsPublic() throws Exception {
         mvc.perform(get("/sw.js")).andExpect(status().isOk());
+    }
+
+    @Test
+    void indexLinksManifestAndRegistersWorker() throws Exception {
+        // Targets /index.html rather than /: MockMvc records the welcome-page
+        // forward without executing it, so GET / has an empty body under test.
+        // Both serve the same file on a real server.
+        mvc.perform(get("/index.html"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("rel=\"manifest\"")))
+                .andExpect(content().string(containsString("/manifest.json")))
+                .andExpect(content().string(containsString("navigator.serviceWorker.register")))
+                .andExpect(content().string(containsString("id=\"offline-banner\"")));
     }
 }

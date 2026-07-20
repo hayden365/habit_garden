@@ -9,9 +9,14 @@
     <link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@700;800&display=swap" rel="stylesheet"/>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css"/>
     <link rel="stylesheet" href="/style.css"/>
+    <link rel="manifest" href="/manifest.json"/>
+    <meta name="theme-color" content="#2F6F4E"/>
+    <!-- iOS ignores the manifest icons and looks for this instead. -->
+    <link rel="apple-touch-icon" href="/icons/icon-192.png"/>
 </head>
 <body>
     <div class="leaf-bg" aria-hidden="true"></div>
+    <div id="offline-banner" class="offline-banner" role="status" hidden></div>
 
     <header class="topbar">
         <div class="brand">
@@ -31,5 +36,14 @@
     </footer>
 
     <script src="/app.js"></script>
+    <script>
+        // Registration failures are non-fatal: the app works fine without the
+        // worker, it just loses offline start-up.
+        if ("serviceWorker" in navigator) {
+            window.addEventListener("load", function () {
+                navigator.serviceWorker.register("/sw.js").catch(function () {});
+            });
+        }
+    </script>
 </body>
 </html>

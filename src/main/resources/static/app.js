@@ -204,12 +204,14 @@ async function init() {
         // The service worker served the shell from cache but there is no
         // network. Say so instead of leaving "불러오는 중…" on screen forever.
         console.error("세션 확인 실패:", e);
-        bootFailed = true;
         showBanner(troubleMessage());
         renderGuestAccount(account);
         if (hadSession()) {
             // This browser has an account whose habits live on the server.
             // Dropping it into an empty guest garden would read as data loss.
+            // Only here is a reload on reconnect worth the cost: it is the one
+            // case where coming back online can produce data we don't have.
+            bootFailed = true;
             app.innerHTML = `<div class="empty">연결되면 습관을 다시 불러올게요.</div>`;
             return;
         }
@@ -503,7 +505,11 @@ function hideBanner() {
 async function withNetworkGuard(fn) {
     try {
         await fn();
-        hideBanner();
+        // A GuestStore write succeeds with no network at all, so a success is
+        // no evidence that connectivity returned. While the browser says we're
+        // offline the banner is still true and must stay up; the "online" event
+        // below is what clears it.
+        if (navigator.onLine) hideBanner();
     } catch (e) {
         // api() reloads the page on 401; nothing to report in that case.
         if (e && e.message === UNAUTHORIZED) return;
@@ -512,11 +518,13 @@ async function withNetworkGuard(fn) {
     }
 }
 
-// Coming back online: the simplest correct refresh is a reload. Only do it when
-// boot actually failed — "online" also fires on Wi-Fi/cellular handoffs and
-// sleep/wake, and reloading a healthy session throws away typed input.
+// Connectivity is back, so an offline notice is no longer true either way.
+// The reload is only for the case where the server holds habits we couldn't
+// fetch — "online" also fires on Wi-Fi/cellular handoffs and sleep/wake, and a
+// guest reading localStorage gains nothing from throwing away their input.
 window.addEventListener("online", () => {
     if (bootFailed) location.reload();
+    else hideBanner();
 });
 
 // ---- misc ----

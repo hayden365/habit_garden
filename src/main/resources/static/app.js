@@ -158,9 +158,20 @@ function normalizeGuest(habit) {
 document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
-    const me = await api("/api/me");
     const account = document.getElementById("account");
     const app = document.getElementById("app");
+
+    let me;
+    try {
+        me = await api("/api/me");
+    } catch (e) {
+        // The service worker served the shell from cache but there is no
+        // network. Say so instead of leaving "불러오는 중…" on screen forever.
+        showBanner(troubleMessage());
+        app.innerHTML = `<div class="empty">연결되면 습관을 다시 불러올게요.</div>`;
+        return;
+    }
+    hideBanner();
 
     if (me.loggedIn) {
         // If this browser has guest habits, fold them into the account once.
@@ -267,23 +278,29 @@ async function addHabit() {
     const title = input.value.trim();
     if (!title) { input.focus(); return; }
     input.value = "";
-    await store.create(title, selectedColor);
-    await loadHabits();
+    await withNetworkGuard(async () => {
+        await store.create(title, selectedColor);
+        await loadHabits();
+    });
 }
 
 async function toggleHabit(id) {
-    const updated = await store.toggleToday(id);
-    const card = document.querySelector(`[data-habit="${id}"]`);
-    if (card) card.replaceWith(renderHabit(updated));
+    await withNetworkGuard(async () => {
+        const updated = await store.toggleToday(id);
+        const card = document.querySelector(`[data-habit="${id}"]`);
+        if (card) card.replaceWith(renderHabit(updated));
+    });
 }
 
 async function deleteHabit(id, title) {
     if (!confirm(`"${title}" 습관과 기록을 삭제할까요?`)) return;
-    await store.remove(id);
-    const card = document.querySelector(`[data-habit="${id}"]`);
-    if (card) card.remove();
-    const container = document.getElementById("habits");
-    if (container && !container.children.length) loadHabits();
+    await withNetworkGuard(async () => {
+        await store.remove(id);
+        const card = document.querySelector(`[data-habit="${id}"]`);
+        if (card) card.remove();
+        const container = document.getElementById("habits");
+        if (container && !container.children.length) loadHabits();
+    });
 }
 
 // ---- one habit card ----
@@ -383,6 +400,42 @@ function buildGrid(completed, todayStr, color) {
     wrap.appendChild(grid);
     return wrap;
 }
+
+// ---- network trouble ----
+const OFFLINE_MSG = "인터넷 연결을 확인해 주세요.";
+const SERVER_MSG  = "서버에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.";
+
+function troubleMessage() {
+    return navigator.onLine ? SERVER_MSG : OFFLINE_MSG;
+}
+
+function showBanner(message) {
+    const el = document.getElementById("offline-banner");
+    if (!el) return;
+    el.textContent = message;
+    el.hidden = false;
+}
+
+function hideBanner() {
+    const el = document.getElementById("offline-banner");
+    if (el) el.hidden = true;
+}
+
+// Wraps a user action so a dead network shows a notice instead of failing
+// silently in the console.
+async function withNetworkGuard(fn) {
+    try {
+        await fn();
+        hideBanner();
+    } catch (e) {
+        // api() reloads the page on 401; nothing to report in that case.
+        if (e && e.message === "unauthorized") return;
+        showBanner(troubleMessage());
+    }
+}
+
+// Coming back online: the simplest correct refresh is a reload.
+window.addEventListener("online", () => location.reload());
 
 // ---- misc ----
 function googleSvg() {

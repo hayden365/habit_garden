@@ -40,4 +40,9 @@ class PwaAssetsTest {
         mvc.perform(get("/icons/icon-512.png")).andExpect(status().isOk());
         mvc.perform(get("/icons/icon-maskable-512.png")).andExpect(status().isOk());
     }
+
+    @Test
+    void serviceWorkerIsPublic() throws Exception {
+        mvc.perform(get("/sw.js")).andExpect(status().isOk());
+    }
 }

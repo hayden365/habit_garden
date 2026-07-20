@@ -7,9 +7,14 @@ const MONTHS_KO = ["1월","2월","3월","4월","5월","6월","7월","8월","9월
 const PRESET_COLORS = ["#3FA34D", "#2E86AB", "#E8A33D", "#C0504D", "#7C5CBF", "#E86A9A"];
 const DEFAULT_COLOR = PRESET_COLORS[0];
 const GUEST_KEY = "habitgarden.guest";
+// Set while a logged-in session is seen, removed when /api/me says otherwise.
+// Offline we can't ask the server, so this is how we tell "a signed-in user
+// with server-side habits" apart from "a browser that only ever had guest data".
+const SESSION_HINT = "habitgarden.hadsession";
 
 let selectedColor = PRESET_COLORS[0];
 let store = null; // GuestStore or ServerStore, chosen at boot
+let bootFailed = false; // true only when init() could not reach /api/me
 
 // ---- tiny date helpers ----
 function seoulToday() {
@@ -33,15 +38,27 @@ function fmtYMD(date) {
 }
 
 // ---- api wrapper ----
+// Shared so a reword here can't silently stop matching in withNetworkGuard.
+const UNAUTHORIZED = "unauthorized";
+
 async function api(path, opts = {}) {
-    const res = await fetch(path, {
-        headers: { "Content-Type": "application/json" },
-        ...opts,
-    });
+    let res;
+    try {
+        res = await fetch(path, {
+            headers: { "Content-Type": "application/json" },
+            ...opts,
+        });
+    } catch (e) {
+        // Only a rejected fetch means the request never reached the server.
+        // Tagging it lets callers avoid blaming the network for HTTP errors.
+        const err = e instanceof Error ? e : new Error("network");
+        err.networkFailure = true;
+        throw err;
+    }
     if (res.status === 401) {
         // Session gone while logged in: drop back to guest mode.
         location.reload();
-        throw new Error("unauthorized");
+        throw new Error(UNAUTHORIZED);
     }
     if (!res.ok) throw new Error(`${res.status}`);
     if (res.status === 204) return null;
@@ -122,6 +139,25 @@ function guestHasHabits() {
     return readGuest().habits.length > 0;
 }
 
+// Written on both branches of a successful /api/me, so logging out clears the
+// hint on the next load without hooking the logout handler.
+function rememberSession(loggedIn) {
+    try {
+        if (loggedIn) localStorage.setItem(SESSION_HINT, "1");
+        else localStorage.removeItem(SESSION_HINT);
+    } catch (e) {
+        // Storage can be full or blocked; the hint is only an optimization.
+        console.error("세션 힌트 저장 실패:", e);
+    }
+}
+function hadSession() {
+    try {
+        return !!localStorage.getItem(SESSION_HINT);
+    } catch (e) {
+        return false;
+    }
+}
+
 // Turn a stored guest habit into the same shape the server returns, computing
 // streak/totalCount/checkedToday over the visible window (mirrors the server).
 function normalizeGuest(habit) {
@@ -167,10 +203,24 @@ async function init() {
     } catch (e) {
         // The service worker served the shell from cache but there is no
         // network. Say so instead of leaving "불러오는 중…" on screen forever.
+        console.error("세션 확인 실패:", e);
+        bootFailed = true;
         showBanner(troubleMessage());
-        app.innerHTML = `<div class="empty">연결되면 습관을 다시 불러올게요.</div>`;
+        renderGuestAccount(account);
+        if (hadSession()) {
+            // This browser has an account whose habits live on the server.
+            // Dropping it into an empty guest garden would read as data loss.
+            app.innerHTML = `<div class="empty">연결되면 습관을 다시 불러올게요.</div>`;
+            return;
+        }
+        // No account was ever seen here, so localStorage holds everything this
+        // user has — and reading it needs no network.
+        store = GuestStore;
+        renderApp(app);
+        await loadHabitsGuarded();
         return;
     }
+    rememberSession(me.loggedIn);
     hideBanner();
 
     if (me.loggedIn) {
@@ -198,7 +248,7 @@ async function init() {
     }
 
     renderApp(app);
-    await loadHabits();
+    await loadHabitsGuarded();
 }
 
 // ---- header (account area) ----
@@ -273,13 +323,30 @@ async function loadHabits() {
     habits.forEach(h => container.appendChild(renderHabit(h)));
 }
 
+// The habit list is the one fetch that runs after boot succeeded, so its
+// failure must still leave an explanation on screen rather than blank space.
+async function loadHabitsGuarded() {
+    try {
+        await loadHabits();
+    } catch (e) {
+        console.error("습관 목록 불러오기 실패:", e);
+        showBanner(errorMessage(e));
+        const target = document.getElementById("habits") || document.getElementById("app");
+        if (target) {
+            target.innerHTML = `<div class="empty">습관을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</div>`;
+        }
+    }
+}
+
 async function addHabit() {
     const input = document.getElementById("new-title");
     const title = input.value.trim();
     if (!title) { input.focus(); return; }
-    input.value = "";
     await withNetworkGuard(async () => {
         await store.create(title, selectedColor);
+        // Only now is the typed title safe to discard; a failed create must
+        // leave it in the box so the user can retry without retyping.
+        input.value = "";
         await loadHabits();
     });
 }
@@ -299,7 +366,7 @@ async function deleteHabit(id, title) {
         const card = document.querySelector(`[data-habit="${id}"]`);
         if (card) card.remove();
         const container = document.getElementById("habits");
-        if (container && !container.children.length) loadHabits();
+        if (container && !container.children.length) await loadHabits();
     });
 }
 
@@ -404,16 +471,26 @@ function buildGrid(completed, todayStr, color) {
 // ---- network trouble ----
 const OFFLINE_MSG = "인터넷 연결을 확인해 주세요.";
 const SERVER_MSG  = "서버에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.";
+const GENERIC_MSG = "문제가 생겼어요. 잠시 후 다시 시도해 주세요.";
 
 function troubleMessage() {
     return navigator.onLine ? SERVER_MSG : OFFLINE_MSG;
 }
 
+// Only a request that never reached the server is a network problem. An HTTP
+// error status or a local failure (storage quota, stale card) is not, and
+// telling the user to check their connection would send them chasing nothing.
+function errorMessage(e) {
+    return e && e.networkFailure ? troubleMessage() : GENERIC_MSG;
+}
+
 function showBanner(message) {
     const el = document.getElementById("offline-banner");
     if (!el) return;
-    el.textContent = message;
+    // #offline-banner is role="status"; a live region mutated while hidden is
+    // not reliably announced, so reveal it before writing the text.
     el.hidden = false;
+    el.textContent = message;
 }
 
 function hideBanner() {
@@ -429,13 +506,18 @@ async function withNetworkGuard(fn) {
         hideBanner();
     } catch (e) {
         // api() reloads the page on 401; nothing to report in that case.
-        if (e && e.message === "unauthorized") return;
-        showBanner(troubleMessage());
+        if (e && e.message === UNAUTHORIZED) return;
+        console.error("작업 실패:", e);
+        showBanner(errorMessage(e));
     }
 }
 
-// Coming back online: the simplest correct refresh is a reload.
-window.addEventListener("online", () => location.reload());
+// Coming back online: the simplest correct refresh is a reload. Only do it when
+// boot actually failed — "online" also fires on Wi-Fi/cellular handoffs and
+// sleep/wake, and reloading a healthy session throws away typed input.
+window.addEventListener("online", () => {
+    if (bootFailed) location.reload();
+});
 
 // ---- misc ----
 function googleSvg() {

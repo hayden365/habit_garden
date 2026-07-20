@@ -14,7 +14,11 @@ const SESSION_HINT = "habitgarden.hadsession";
 
 let selectedColor = PRESET_COLORS[0];
 let store = null; // GuestStore or ServerStore, chosen at boot
-let bootFailed = false; // true only when init() could not reach /api/me
+// True only when init() failed to reach /api/me for a browser that has a
+// server-side account (hadSession() below) -- the one case where reconnecting
+// can produce data the client doesn't already have, so it's the one case the
+// "online" handler reloads for.
+let bootFailed = false;
 
 // ---- tiny date helpers ----
 function seoulToday() {
@@ -204,6 +208,9 @@ async function init() {
         // The service worker served the shell from cache but there is no
         // network. Say so instead of leaving "불러오는 중…" on screen forever.
         console.error("세션 확인 실패:", e);
+        // troubleMessage(), not errorMessage(e): whatever the cause, the server
+        // is unreachable at boot, so the connectivity wording is right even
+        // for e.g. a 500.
         showBanner(troubleMessage());
         renderGuestAccount(account);
         if (hadSession()) {
@@ -212,7 +219,8 @@ async function init() {
             // Only here is a reload on reconnect worth the cost: it is the one
             // case where coming back online can produce data we don't have.
             bootFailed = true;
-            app.innerHTML = `<div class="empty">연결되면 습관을 다시 불러올게요.</div>`;
+            app.innerHTML = "";
+            app.appendChild(emptyWithRetry("연결되면 습관을 다시 불러올게요."));
             return;
         }
         // No account was ever seen here, so localStorage holds everything this
@@ -314,6 +322,26 @@ function renderApp(root) {
     });
 }
 
+// A ".empty" message paired with a button that reloads the page. Used for the
+// two dead-end states where nothing on screen will change on its own: a boot
+// failure and a habit-list fetch failure.
+function emptyWithRetry(message) {
+    const el = document.createElement("div");
+    el.className = "empty";
+
+    const text = document.createElement("div");
+    text.textContent = message;
+    el.appendChild(text);
+
+    const retry = document.createElement("button");
+    retry.className = "btn btn-primary";
+    retry.textContent = "다시 시도";
+    retry.addEventListener("click", () => location.reload());
+    el.appendChild(retry);
+
+    return el;
+}
+
 async function loadHabits() {
     const habits = await store.list();
     const container = document.getElementById("habits");
@@ -335,7 +363,8 @@ async function loadHabitsGuarded() {
         showBanner(errorMessage(e));
         const target = document.getElementById("habits") || document.getElementById("app");
         if (target) {
-            target.innerHTML = `<div class="empty">습관을 불러오지 못했어요. 잠시 후 다시 시도해 주세요.</div>`;
+            target.innerHTML = "";
+            target.appendChild(emptyWithRetry("습관을 불러오지 못했어요. 잠시 후 다시 시도해 주세요."));
         }
     }
 }
@@ -500,8 +529,8 @@ function hideBanner() {
     if (el) el.hidden = true;
 }
 
-// Wraps a user action so a dead network shows a notice instead of failing
-// silently in the console.
+// Wraps a user action so any failure -- network or not -- shows a notice
+// instead of failing silently in the console.
 async function withNetworkGuard(fn) {
     try {
         await fn();

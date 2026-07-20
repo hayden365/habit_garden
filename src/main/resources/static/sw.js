@@ -2,7 +2,7 @@
 
 // Bump this whenever index.html, style.css, or app.js changes. Installed apps
 // serve the shell cache-first, so without a bump they keep showing the old UI.
-const CACHE_VERSION = "hg-v4";
+const CACHE_VERSION = "hg-v5";
 
 // The app shell: everything needed to paint a window with no network.
 const PRECACHE = [
